@@ -7,11 +7,11 @@ import {
   SlidersHorizontal, Sparkles, Trash2, Trophy, Users, X
 } from "lucide-react";
 
-type Entry = { id: string; label: string; color: string; image?: string; stock?: number }; // NEW: stock (empty = unlimited)
-type Schedule = { id: string; spin: number; entryId: string };
+type Entry = { id: string; label: string; color: string; image?: string; stock?: number }; // stock (empty = unlimited)
+type Rule = { id: string; every: string; entryId: string }; // every = "every Nth spin"
 type Result = { id: string; spin: number; winner: string; time: string; scheduled: boolean };
 type BgMode = "preset" | "color" | "image";
-type PickKind = "bg" | "center" | "entry" | "rim" | "face"; // NEW: added "face"
+type PickKind = "bg" | "center" | "entry" | "rim" | "face";
 
 const palette = ["#8B5CF6", "#F59E0B", "#14B8A6", "#F472B6", "#60A5FA", "#FB7185", "#A3E635", "#818CF8", "#F97316", "#2DD4BF"];
 const initialNames = ["Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley"];
@@ -43,8 +43,11 @@ export default function Home() {
   const [draft, setDraft] = useState("");
   const [bulk, setBulk] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
-  const [schedules, setSchedules] = useState<Schedule[]>([]);
-  const [batchRows, setBatchRows] = useState<{ id: string; spin: string; entryId: string }[]>([{ id: "batch-1", spin: "5", entryId: "" }, { id: "batch-2", spin: "10", entryId: "" }]);
+  const [rules, setRules] = useState<Rule[]>([
+    { id: "rule-1", every: "10", entryId: "" },
+    { id: "rule-2", every: "20", entryId: "" },
+    { id: "rule-3", every: "50", entryId: "" },
+  ]);
   const [history, setHistory] = useState<Result[]>([]);
   const [spinCount, setSpinCount] = useState(0);
   const [rotation, setRotation] = useState(0);
@@ -73,7 +76,7 @@ export default function Home() {
   const [rimImage, setRimImage] = useState("");
   const [rimSize, setRimSize] = useState(3); // ring thickness, % of wheel width
 
-  // NEW: Whole wheel face image
+  // Whole wheel face image
   const [faceImage, setFaceImage] = useState("");
   const [sliceOpacity, setSliceOpacity] = useState(0.35); // 0 = image only, 1 = solid colors
 
@@ -82,14 +85,15 @@ export default function Home() {
   const fileRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const anyFileRef = useRef<HTMLInputElement>(null);
-  const pickKind = useRef<PickKind>("bg"); // NEW: uses PickKind type
+  const pickKind = useRef<PickKind>("bg");
 
   const isFull = nativeFull || fakeFull;
 
+  // Keep every rule pointing at a real entry
   useEffect(() => {
-    setBatchRows(prev => prev.map(row => ({
-      ...row,
-      entryId: (!row.entryId || !entries.some(e => e.id === row.entryId)) ? (entries[0]?.id ?? "") : row.entryId
+    setRules(prev => prev.map(r => ({
+      ...r,
+      entryId: (!r.entryId || !entries.some(e => e.id === r.entryId)) ? (entries[0]?.id ?? "") : r.entryId
     })));
   }, [entries]);
 
@@ -129,9 +133,6 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [drawerOpen, fakeFull, imgMenuOpen]);
 
-  const scheduledSpins = useMemo(() => new Set(schedules.map(s => s.spin)), [schedules]);
-  const nextSpin = spinCount + 1;
-
   // Resolve the active stage background
   const stage = useMemo(() => {
     if (bgMode === "image" && bgImage) {
@@ -166,7 +167,7 @@ export default function Home() {
   }
 
   // Opens the file picker for one of the "Add image" options
-  function chooseImage(kind: PickKind) { // NEW: uses PickKind type
+  function chooseImage(kind: PickKind) {
     pickKind.current = kind;
     setImgMenuOpen(false);
     anyFileRef.current?.click();
@@ -183,7 +184,7 @@ export default function Home() {
       if (kind === "bg") { setBgImage(src); setBgMode("image"); }
       else if (kind === "center") { setHubImage(src); }
       else if (kind === "rim") { setRimImage(src); }
-      else if (kind === "face") { setFaceImage(src); } // NEW
+      else if (kind === "face") { setFaceImage(src); }
       else {
         const label = file.name.replace(/\.[^.]+$/, "").slice(0, 20) || "Image";
         setEntries(prev => [...prev, { id: uid(), label, color: palette[prev.length % palette.length], image: src }]);
@@ -193,10 +194,14 @@ export default function Home() {
     reader.readAsDataURL(file);
   }
 
-  // Deleting an entry also deletes its prize schedules, so a spin can never get stuck on a missing entry.
+  // Deleting an entry also deletes its prize rules, so a spin can never get stuck on a missing entry.
   function removeEntry(id: string) {
     setEntries(prev => prev.filter(e => e.id !== id));
-    setSchedules(prev => prev.filter(s => s.entryId !== id));
+    setRules(prev => prev.filter(r => r.entryId !== id));
+  }
+
+  function addRule() {
+    setRules(prev => [...prev, { id: uid(), every: "", entryId: entries[0]?.id ?? "" }]);
   }
 
   function addEntry() {
@@ -216,57 +221,35 @@ export default function Home() {
     setNotice(`${labels.length} entries added`);
   }
 
-  function addBatchRow() {
-    setBatchRows(prev => [...prev, { id: uid(), spin: String((prev.length + 1) * 5), entryId: entries[0]?.id ?? "" }]);
-  }
-
-  function saveBatchSchedules() {
-    const parsed = batchRows.map(row => ({ ...row, spinNumber: Number(row.spin) }));
-    if (!parsed.length) {
-      setNotice("Add at least one schedule row.");
-      return;
-    }
-    const invalid = parsed.find(row => !Number.isInteger(row.spinNumber) || row.spinNumber < 1 || !row.entryId || !entries.some(e => e.id === row.entryId));
-    if (invalid) {
-      setNotice("Each schedule needs a valid spin number and a winning entry.");
-      return;
-    }
-    if (parsed.some(row => row.spinNumber <= spinCount)) {
-      setNotice(`Spin numbers must be after #${spinCount}.`);
-      return;
-    }
-    const rowSpins = parsed.map(row => row.spinNumber);
-    if (new Set(rowSpins).size !== rowSpins.length) {
-      setNotice("Each row must use a different spin number.");
-      return;
-    }
-    const conflict = parsed.find(row => schedules.some(existing => existing.spin === row.spinNumber));
-    if (conflict) {
-      setNotice(`Spin ${conflict.spinNumber} already has a saved schedule. Remove it before replacing it.`);
-      return;
-    }
-    setSchedules(prev => [...prev, ...parsed.map(row => ({ id: uid(), spin: row.spinNumber, entryId: row.entryId }))].sort((a, b) => a.spin - b.spin));
-    setNotice(`${parsed.length} prize schedule${parsed.length === 1 ? "" : "s"} saved`);
-  }
-
   function spinWheel() {
     if (spinning || entries.length < 2) return;
     const targetSpin = spinCount + 1;
 
-    // NEW: an entry is available only if it has unlimited stock or stock left
+    // An entry is available only if it has unlimited stock or stock left
     const inStock = (e: Entry) => e.stock === undefined || e.stock > 0;
 
-    // NEW: a scheduled entry only wins if it is still in stock
-    const scheduled = schedules.find(s => s.spin === targetSpin);
-    const scheduledEntry = scheduled ? entries.find(e => e.id === scheduled.entryId && inStock(e)) : undefined;
+    // Valid rules only
+    const validRules = rules
+      .map(r => ({ ...r, n: Number(r.every) }))
+      .filter(r => Number.isInteger(r.n) && r.n >= 1 && entries.some(e => e.id === r.entryId));
 
-    // Entries scheduled for a FUTURE spin are held back from random picks
-    const reservedIds = new Set(schedules.filter(s => s.spin > targetSpin).map(s => s.entryId));
+    // Rules that hit this spin, rarest (biggest N) first
+    const hits = validRules.filter(r => targetSpin % r.n === 0).sort((a, b) => b.n - a.n);
+
+    // First hit whose prize is still in stock
+    let scheduledEntry: Entry | undefined;
+    for (const r of hits) {
+      const e = entries.find(x => x.id === r.entryId && inStock(x));
+      if (e) { scheduledEntry = e; break; }
+    }
+
+    // Prize entries are never picked randomly
+    const reservedIds = new Set(validRules.map(r => r.entryId));
     const randomPool = entries.filter(e => inStock(e) && !reservedIds.has(e.id));
 
     if (!scheduledEntry && randomPool.length === 0) {
       setNotice(entries.some(inStock)
-        ? "Every remaining entry is scheduled for a later spin, so none can be picked yet."
+        ? "Only prize entries are left, so there is nothing to pick randomly on this spin."
         : "Everything is out of stock.");
       return;
     }
@@ -297,7 +280,7 @@ export default function Home() {
       setHistory(prev => [result, ...prev]);
       setSpinning(false);
 
-      // NEW: take 1 off the winner's stock (unlimited items are left alone)
+      // Take 1 off the winner's stock (unlimited items are left alone)
       setEntries(prev => prev.map(e =>
         e.id === winnerEntry.id && e.stock !== undefined ? { ...e, stock: Math.max(0, e.stock - 1) } : e
       ));
@@ -320,7 +303,7 @@ export default function Home() {
   function resetAll() {
     if (spinning) return;
     setEntries(initialNames.map((label, i) => ({ id: `starter-${i}`, label, color: palette[i] })));
-    setSchedules([]);
+    setRules([]);
     setHistory([]);
     setSpinCount(0);
     setRotation(0);
@@ -329,15 +312,12 @@ export default function Home() {
   }
 
   function exportHistory() {
-    const csv = ["Spin,Winner,Time,Result type", ...history.slice().reverse().map(r => `${r.spin},"${r.winner.replaceAll('"', '""')}",${r.time},${r.scheduled ? "Scheduled" : "Random"}`)].join("\n");
+    const csv = ["Spin,Winner,Time,Result type", ...history.slice().reverse().map(r => `${r.spin},"${r.winner.replaceAll('"', '""')}",${r.time},${r.scheduled ? "Prize" : "Random"}`)].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "spin-history.csv"; a.click();
     URL.revokeObjectURL(url);
   }
-
-  const hintText = stage.dark ? "text-white/80" : "text-slate-400";
-  const hintStrong = stage.dark ? "text-white" : "text-slate-600";
 
   return (
     <main className="min-h-screen pb-12">
@@ -409,7 +389,6 @@ export default function Home() {
                       Add outer ring image
                     </button>
 
-                    {/* NEW: whole wheel image menu item */}
                     <button onClick={() => chooseImage("face")} className="flex w-full items-center gap-4 rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-white hover:bg-white/10">
                       <span className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-fuchsia-500 to-amber-400" />
                       Add whole wheel image
@@ -451,7 +430,7 @@ export default function Home() {
               >
                 <div ref={wheelRef} className="relative h-full w-full overflow-hidden rounded-full border-[5px] border-white bg-slate-100 transition-transform [transition-timing-function:cubic-bezier(.12,.72,.12,1)]" style={{ transform: `rotate(${rotation}deg)`, transitionDuration: spinning ? "4.7s" : "0s" }}>
 
-                  {/* NEW: whole wheel image (spins with the wheel) */}
+                  {/* Whole wheel image (spins with the wheel) */}
                   {faceImage && (
                     <img src={faceImage} alt="" className="absolute inset-0 h-full w-full object-cover" />
                   )}
@@ -471,7 +450,7 @@ export default function Home() {
                       const slicePath = `M 200 200 L ${x1} ${y1} A 194 194 0 ${large} 1 ${x2} ${y2} Z`;
                       const s = entries.length <= 4 ? 300 : 200;
                       return <g key={entry.id}>
-                        {/* NEW: fillOpacity makes slices see-through when a whole wheel image is set */}
+                        {/* fillOpacity makes slices see-through when a whole wheel image is set */}
                         {entries.length === 1
                           ? <circle cx="200" cy="200" r="194" fill={entry.color} fillOpacity={faceImage ? sliceOpacity : 1} stroke="white" strokeWidth="2" />
                           : <path d={slicePath} fill={entry.color} fillOpacity={faceImage ? sliceOpacity : 1} stroke="white" strokeWidth="2" />}
@@ -516,16 +495,26 @@ export default function Home() {
             </div>
           </div>
 
-          {winner && !spinning && <div className="shrink-0 border-t border-violet-100 bg-gradient-to-r from-violet-50 to-fuchsia-50 px-5 py-5 sm:px-7">
-            <div className="flex items-center gap-4">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white text-violet-600 shadow-sm"><Trophy size={23} /></div>
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-bold uppercase tracking-wider text-violet-600">We have a winner</div>
-                <div className="mt-1 truncate text-2xl font-black tracking-tight text-slate-900">{winner.winner}</div>
+          {winner && !spinning && (
+            <div
+              className="fixed inset-0 z-[75] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm"
+              onClick={() => setWinner(null)}
+            >
+              <div
+                className="relative w-full max-w-md rounded-3xl bg-white p-8 text-center shadow-2xl"
+                onClick={e => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-label="Winner"
+              >
+                <button onClick={() => setWinner(null)} className="absolute right-4 top-4 rounded-xl p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close"><X size={20} /></button>
+                <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-violet-100 to-fuchsia-100 text-violet-600"><Trophy size={38} /></div>
+                <div className="mt-5 text-xs font-bold uppercase tracking-[.2em] text-violet-600">{winner.scheduled ? "YOU HAVE WON" : "YOU HAVE WON"}</div>
+                <div className="mt-3 break-words text-4xl font-black tracking-tight text-slate-900">{winner.winner}</div>
+                <button onClick={() => setWinner(null)} className="mt-7 w-full rounded-2xl bg-violet-600 px-6 py-3.5 text-base font-extrabold text-white transition hover:bg-violet-700">Continue</button>
               </div>
-              <button onClick={() => setWinner(null)} className="rounded-xl p-2 text-slate-400 hover:bg-white hover:text-slate-700" aria-label="Dismiss winner"><X size={18} /></button>
             </div>
-          </div>}
+          )}
 
           {/* ---------- Settings drawer ---------- */}
           <div
@@ -621,7 +610,7 @@ export default function Home() {
                 </label>
               </div>
 
-              {/* NEW: Whole wheel image card */}
+              {/* Whole wheel image card */}
               <div className={drawerCard}>
                 <div className="mb-4 flex items-center gap-2">
                   <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-100 text-slate-700"><ImagePlus size={18} /></span>
@@ -692,37 +681,35 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Prize scheduler */}
+              {/* Prize rules */}
               <div className={drawerCard}>
                 <button onClick={() => setShowSchedule(v => !v)} className="flex w-full items-center justify-between text-left">
-                  <div className="flex items-center gap-3"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50 text-amber-600"><Crown size={18} /></span><div><h3 className="font-extrabold text-slate-900">Prize scheduler</h3><p className="mt-1 text-xs text-slate-500">Set a winner for a specific spin</p></div></div>
+                  <div className="flex items-center gap-3"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50 text-amber-600"><Crown size={18} /></span><div><h3 className="font-extrabold text-slate-900">Prize rules</h3><p className="mt-1 text-xs text-slate-500">Repeat a prize every Nth spin</p></div></div>
                   <ChevronDown size={18} className={`text-slate-400 transition ${showSchedule ? "rotate-180" : ""}`} />
                 </button>
                 {showSchedule && <div className="mt-5">
-                  <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-3.5"><div className="flex gap-2"><CircleHelp size={16} className="mt-0.5 shrink-0 text-amber-700" /><p className="text-xs leading-5 text-amber-900">Choose an entry and the spin number. That entry will win on that spin; all other spins remain random.</p></div></div>
+                  <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-3.5"><div className="flex gap-2"><CircleHelp size={16} className="mt-0.5 shrink-0 text-amber-700" /><p className="text-xs leading-5 text-amber-900">Example: every 10 → Good prize, every 20 → Better prize, every 50 → Grand prize. If rules overlap, the biggest number wins. Prize entries are never picked randomly.</p></div></div>
+
                   <div className="mt-4 flex items-center justify-between gap-2">
-                    <div><div className="text-sm font-extrabold text-slate-800">Schedule multiple spins</div><div className="mt-1 text-xs text-slate-400">Add several target spins before saving.</div></div>
-                    <button onClick={addBatchRow} disabled={!entries.length} className="shrink-0 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-100 disabled:opacity-40">＋ Add row</button>
+                    <div className="text-sm font-extrabold text-slate-800">Rules</div>
+                    <button onClick={addRule} disabled={!entries.length} className="shrink-0 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-100 disabled:opacity-40">＋ Add rule</button>
                   </div>
+
                   <div className="mt-3 space-y-2">
-                    {batchRows.map((row, index) => <div key={row.id} className="grid grid-cols-[.65fr_1.25fr_36px] items-end gap-2 rounded-xl border border-slate-100 bg-slate-50/70 p-2.5">
-                      <label className="min-w-0"><span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">Spin #</span><input type="number" min="1" value={row.spin} onChange={e => setBatchRows(prev => prev.map(r => r.id === row.id ? { ...r, spin: e.target.value } : r))} className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2.5 text-sm outline-none focus:border-violet-300" /></label>
-                      <label className="min-w-0"><span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">Winning entry</span><select value={row.entryId} onChange={e => setBatchRows(prev => prev.map(r => r.id === row.id ? { ...r, entryId: e.target.value } : r))} className="w-full min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-2.5 text-sm outline-none focus:border-violet-300">{entries.map(e => <option key={e.id} value={e.id}>{e.label}</option>)}</select></label>
-                      <button onClick={() => setBatchRows(prev => prev.filter(r => r.id !== row.id))} disabled={batchRows.length === 1} className="mb-0.5 flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-30" aria-label={`Remove schedule row ${index + 1}`}><X size={15} /></button>
+                    {rules.map((row, index) => <div key={row.id} className="grid grid-cols-[.65fr_1.25fr_36px] items-end gap-2 rounded-xl border border-slate-100 bg-slate-50/70 p-2.5">
+                      <label className="min-w-0"><span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">Every Nth spin</span><input type="number" min="1" value={row.every} onChange={e => setRules(prev => prev.map(r => r.id === row.id ? { ...r, every: e.target.value } : r))} className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2.5 text-sm outline-none focus:border-violet-300" /></label>
+                      <label className="min-w-0"><span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">Prize entry</span><select value={row.entryId} onChange={e => setRules(prev => prev.map(r => r.id === row.id ? { ...r, entryId: e.target.value } : r))} className="w-full min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-2.5 text-sm outline-none focus:border-violet-300">{entries.map(e => <option key={e.id} value={e.id}>{e.label}</option>)}</select></label>
+                      <button onClick={() => setRules(prev => prev.filter(r => r.id !== row.id))} className="mb-0.5 flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500" aria-label={`Remove rule ${index + 1}`}><X size={15} /></button>
                     </div>)}
+                    {rules.length === 0 && <div className="rounded-xl border border-dashed border-slate-200 px-4 py-5 text-center"><Clock3 size={19} className="mx-auto text-slate-300" /><p className="mt-2 text-xs font-semibold text-slate-400">No prize rules yet</p></div>}
                   </div>
-                  <button onClick={saveBatchSchedules} disabled={!entries.length || !batchRows.length} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"><Check size={16} /> Save all schedules</button>
-                  {schedules.length > 0 ? <div className="mt-4 space-y-2">
-                    <div className="text-[11px] font-bold uppercase tracking-[.14em] text-slate-400">Upcoming scheduled spins</div>
-                    {schedules.map(s => { const e = entries.find(en => en.id === s.entryId); return <div key={s.id} className="flex items-center gap-3 rounded-xl border border-slate-100 p-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-xs font-black text-amber-700">#{s.spin}</span><span className="min-w-0 flex-1 truncate text-sm font-bold text-slate-700">{e?.label ?? "Entry removed"}</span><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${s.spin <= spinCount ? "bg-slate-100 text-slate-400" : "bg-emerald-50 text-emerald-700"}`}>{s.spin <= spinCount ? "USED" : "SET"}</span><button onClick={() => setSchedules(prev => prev.filter(x => x.id !== s.id))} className="rounded-lg p-1.5 text-slate-300 hover:bg-rose-50 hover:text-rose-500" aria-label={`Remove spin ${s.spin} schedule`}><X size={15} /></button></div> })}
-                  </div> : <div className="mt-4 rounded-xl border border-dashed border-slate-200 px-4 py-5 text-center"><Clock3 size={19} className="mx-auto text-slate-300" /><p className="mt-2 text-xs font-semibold text-slate-400">No scheduled prizes yet</p></div>}
                 </div>}
               </div>
 
               {/* History */}
               <div className={drawerCard}>
                 <div className="mb-4 flex items-center justify-between"><div className="flex items-center gap-3"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-50 text-sky-600"><History size={18} /></span><div><h3 className="font-extrabold text-slate-900">Spin history</h3><p className="mt-1 text-xs text-slate-500">Your recent results</p></div></div><button onClick={exportHistory} disabled={!history.length} title="Export CSV" className="rounded-xl border border-slate-200 p-2.5 text-slate-500 transition hover:bg-slate-50 disabled:opacity-30"><Download size={16} /></button></div>
-                {history.length ? <div className="space-y-1.5">{history.slice(0, 5).map((r, i) => <div key={r.id} className="flex items-center gap-3 rounded-xl px-2 py-2.5"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-xs font-black ${i === 0 ? "bg-violet-100 text-violet-700" : "bg-slate-100 text-slate-500"}`}>{r.spin}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-slate-700">{r.winner}</span><span className="mt-0.5 block text-[11px] text-slate-400">{r.time}</span></span>{r.scheduled && <span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700">SCHEDULED</span>}</div>)}</div> : <div className="rounded-xl bg-slate-50 px-4 py-7 text-center"><History size={20} className="mx-auto text-slate-300" /><p className="mt-2 text-sm font-semibold text-slate-500">Nothing spun yet</p><p className="mt-1 text-xs text-slate-400">Your results will show up here.</p></div>}
+                {history.length ? <div className="space-y-1.5">{history.slice(0, 5).map((r, i) => <div key={r.id} className="flex items-center gap-3 rounded-xl px-2 py-2.5"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-xs font-black ${i === 0 ? "bg-violet-100 text-violet-700" : "bg-slate-100 text-slate-500"}`}>{r.spin}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-slate-700">{r.winner}</span><span className="mt-0.5 block text-[11px] text-slate-400">{r.time}</span></span>{r.scheduled && <span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700">PRIZE</span>}</div>)}</div> : <div className="rounded-xl bg-slate-50 px-4 py-7 text-center"><History size={20} className="mx-auto text-slate-300" /><p className="mt-2 text-sm font-semibold text-slate-500">Nothing spun yet</p><p className="mt-1 text-xs text-slate-400">Your results will show up here.</p></div>}
                 {history.length > 0 && <button onClick={() => { setHistory([]); setNotice("Spin history cleared"); }} className="mt-3 w-full rounded-xl py-2 text-xs font-bold text-slate-400 transition hover:bg-rose-50 hover:text-rose-500">Clear history</button>}
               </div>
             </div>
