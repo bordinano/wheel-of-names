@@ -9,7 +9,7 @@ import {
 
 type Entry = { id: string; label: string; color: string; image?: string; stock?: number }; // stock (empty = unlimited)
 type Rule = { id: string; every: string; entryId: string }; // every = "every Nth spin"
-type Result = { id: string; spin: number; winner: string; time: string; scheduled: boolean };
+type Result = { id: string; spin: number; winner: string; entryId: string; time: string; scheduled: boolean };
 type BgMode = "preset" | "color" | "image";
 type PickKind = "bg" | "center" | "entry" | "rim" | "face";
 
@@ -317,6 +317,7 @@ export default function Home() {
         id: uid(),
         spin: targetSpin,
         winner: winnerEntry.label,
+        entryId: winnerEntry.id,
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         scheduled: Boolean(scheduledEntry)
       };
@@ -568,8 +569,15 @@ export default function Home() {
                 <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-violet-100 to-fuchsia-100 text-violet-600"><Trophy size={38} /></div>
                 <div className="mt-5 text-xs font-bold uppercase tracking-[.2em] text-violet-600">{winner.scheduled ? "Prize winner" : "We have a winner"}</div>
                 <div className="mt-3 break-words text-4xl font-black tracking-tight text-slate-900">{winner.winner}</div>
-                <div className="mt-2 text-sm text-slate-400">Spin #{winner.spin}</div>
-                <button onClick={() => setWinner(null)} className="mt-7 w-full rounded-2xl bg-violet-600 px-6 py-3.5 text-base font-extrabold text-white transition hover:bg-violet-700">Continue</button>
+                <div className="mt-7 flex flex-col gap-2 sm:flex-row">
+                  {entries.some(e => e.id === winner.entryId) && (
+                    <button
+                      onClick={() => { removeEntry(winner.entryId); setWinner(null); setNotice(`${winner.winner} removed from the wheel`); }}
+                      className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-6 py-3.5 text-base font-extrabold text-rose-600 transition hover:bg-rose-100"
+                    ><Trash2 size={18} /> Remove from wheel</button>
+                  )}
+                  <button onClick={() => setWinner(null)} className="flex-1 rounded-2xl bg-violet-600 px-6 py-3.5 text-base font-extrabold text-white transition hover:bg-violet-700">Continue</button>
+                </div>
               </div>
             </div>
           )}
