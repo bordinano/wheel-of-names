@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
-  Check, ChevronDown, CircleHelp, Clock3, Crown, Download, History, ImagePlus,
+  ArrowDown, ArrowUp, Check, ChevronDown, CircleHelp, Clock3, Crown, Download, GripVertical, History, ImagePlus,
   ListPlus, Maximize, Minimize, Palette, RotateCcw, Settings2, Shuffle,
   SlidersHorizontal, Sparkles, Trash2, Trophy, Users, X
 } from "lucide-react";
@@ -57,6 +57,10 @@ export default function Home() {
   const [removeWinner, setRemoveWinner] = useState(false);
   const [soundOn, setSoundOn] = useState(false);
   const [notice, setNotice] = useState("");
+
+  // Drag & drop reordering of entries
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
 
   // Drawer, fullscreen, background
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -121,17 +125,18 @@ export default function Home() {
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
-  // Esc closes the menu/drawer; also exits the fallback "fake" fullscreen
+  // Esc closes the winner popup, then the menu/drawer; also exits the fallback "fake" fullscreen
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (imgMenuOpen) setImgMenuOpen(false);
+      if (winner && !spinning) setWinner(null);
+      else if (imgMenuOpen) setImgMenuOpen(false);
       else if (drawerOpen) setDrawerOpen(false);
       else if (fakeFull) setFakeFull(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [drawerOpen, fakeFull, imgMenuOpen]);
+  }, [drawerOpen, fakeFull, imgMenuOpen, winner, spinning]);
 
   // Resolve the active stage background
   const stage = useMemo(() => {
@@ -221,6 +226,43 @@ export default function Home() {
     setNotice(`${labels.length} entries added`);
   }
 
+  function shuffleEntries() {
+    if (spinning || entries.length < 2) return;
+    setEntries(prev => {
+      const arr = [...prev];
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    });
+    setNotice("Entries shuffled");
+  }
+
+  function moveEntry(fromId: string, toId: string) {
+    if (fromId === toId) return;
+    setEntries(prev => {
+      const arr = [...prev];
+      const from = arr.findIndex(e => e.id === fromId);
+      const to = arr.findIndex(e => e.id === toId);
+      if (from < 0 || to < 0) return prev;
+      const [item] = arr.splice(from, 1);
+      arr.splice(to, 0, item);
+      return arr;
+    });
+  }
+
+  function nudgeEntry(id: string, dir: -1 | 1) {
+    setEntries(prev => {
+      const i = prev.findIndex(e => e.id === id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= prev.length) return prev;
+      const arr = [...prev];
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+      return arr;
+    });
+  }
+
   function spinWheel() {
     if (spinning || entries.length < 2) return;
     const targetSpin = spinCount + 1;
@@ -259,7 +301,10 @@ export default function Home() {
 
     const index = entries.findIndex(e => e.id === winnerEntry.id);
     const segment = 360 / entries.length;
-    const desired = -(index * segment + segment / 2);
+    // Land somewhere inside the winning slice, not always dead center.
+    // 0.4 keeps the pointer safely away from the slice edges (max 0.45).
+    const jitter = (Math.random() * 2 - 1) * segment * 0.4;
+    const desired = -(index * segment + segment / 2 + jitter);
     const currentNormalized = ((rotation % 360) + 360) % 360;
     const delta = ((desired - currentNormalized) % 360 + 360) % 360;
     const nextRotation = rotation + 360 * (5 + Math.floor(Math.random() * 3)) + delta;
@@ -407,6 +452,7 @@ export default function Home() {
               </div>
 
               <button onClick={() => setSoundOn(v => !v)} className={`rounded-xl px-3 py-2 text-xs font-bold transition ${soundOn ? "bg-violet-50 text-violet-700" : "bg-slate-50 text-slate-500 hover:bg-slate-100"}`}>{soundOn ? "Sound on" : "Sound off"}</button>
+              <button onClick={shuffleEntries} disabled={spinning || entries.length < 2} className="inline-flex items-center gap-1.5 rounded-xl bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50" aria-label="Shuffle entries"><Shuffle size={14} /> <span className="hidden sm:inline">Shuffle</span></button>
               <button onClick={() => setDrawerOpen(true)} className="inline-flex items-center gap-1.5 rounded-xl bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-100" aria-label="Open settings"><SlidersHorizontal size={14} /> <span className="hidden sm:inline">Settings</span></button>
               <button onClick={toggleFullscreen} className="inline-flex items-center gap-1.5 rounded-xl bg-violet-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-violet-700" aria-label={isFull ? "Exit full screen" : "Enter full screen"}>
                 {isFull ? <Minimize size={14} /> : <Maximize size={14} />} <span className="hidden sm:inline">{isFull ? "Exit full screen" : "Full screen"}</span>
@@ -449,6 +495,16 @@ export default function Home() {
                       const tx = pt(200 + 126 * Math.cos(rad)), ty = pt(200 + 126 * Math.sin(rad));
                       const slicePath = `M 200 200 L ${x1} ${y1} A 194 194 0 ${large} 1 ${x2} ${y2} Z`;
                       const s = entries.length <= 4 ? 300 : 200;
+
+                      // Text runs along the slice (rim → center), sized to fit inside it
+                      const textR = 184;                                          // text ends here, near the rim
+                      const hubReach = hubSize * 2 + 10;                          // approx. space taken by the center logo
+                      const room = textR - hubReach;                              // length available for text
+                      const chord = 2 * 150 * Math.sin((angle * Math.PI) / 360);  // slice width around the middle
+                      const fs = Math.max(7, Math.min(18, chord * 0.55));         // font size that fits the slice width
+                      const maxChars = Math.max(3, Math.floor(room / (fs * 0.6)));
+                      const shown = entry.label.length > maxChars ? entry.label.slice(0, maxChars - 1) + "…" : entry.label;
+
                       return <g key={entry.id}>
                         {/* fillOpacity makes slices see-through when a whole wheel image is set */}
                         {entries.length === 1
@@ -466,7 +522,7 @@ export default function Home() {
                           {entries.length > 1 && <path d={slicePath} fill="none" stroke="white" strokeWidth="2" />}
                         </>}
 
-                        <text x={tx} y={ty} fill="#fff" fontSize={entries.length > 12 ? "10" : entries.length > 8 ? "12" : "15"} fontWeight="700" textAnchor="middle" dominantBaseline="middle" transform={`rotate(${mid + 90}, ${tx}, ${ty})`} style={{ textShadow: "0 1px 3px rgba(0,0,0,.6)", paintOrder: "stroke", stroke: entry.image ? "rgba(0,0,0,.45)" : "none", strokeWidth: 3 }}>{entry.label.length > 15 ? entry.label.slice(0, 13) + "…" : entry.label}</text>
+                        <text x={200 + textR} y={200} fill="#fff" fontSize={pt(fs)} fontWeight="700" textAnchor="end" dominantBaseline="middle" transform={`rotate(${mid}, 200, 200)`} style={{ textShadow: "0 1px 3px rgba(0,0,0,.6)", paintOrder: "stroke", stroke: entry.image ? "rgba(0,0,0,.45)" : "none", strokeWidth: 3 }}>{shown}</text>
                       </g>;
                     })}
                   </svg>
@@ -495,6 +551,7 @@ export default function Home() {
             </div>
           </div>
 
+          {/* ---------- Winner popup ---------- */}
           {winner && !spinning && (
             <div
               className="fixed inset-0 z-[75] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm"
@@ -509,8 +566,9 @@ export default function Home() {
               >
                 <button onClick={() => setWinner(null)} className="absolute right-4 top-4 rounded-xl p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close"><X size={20} /></button>
                 <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-violet-100 to-fuchsia-100 text-violet-600"><Trophy size={38} /></div>
-                <div className="mt-5 text-xs font-bold uppercase tracking-[.2em] text-violet-600">{winner.scheduled ? "YOU HAVE WON" : "YOU HAVE WON"}</div>
+                <div className="mt-5 text-xs font-bold uppercase tracking-[.2em] text-violet-600">{winner.scheduled ? "Prize winner" : "We have a winner"}</div>
                 <div className="mt-3 break-words text-4xl font-black tracking-tight text-slate-900">{winner.winner}</div>
+                <div className="mt-2 text-sm text-slate-400">Spin #{winner.spin}</div>
                 <button onClick={() => setWinner(null)} className="mt-7 w-full rounded-2xl bg-violet-600 px-6 py-3.5 text-base font-extrabold text-white transition hover:bg-violet-700">Continue</button>
               </div>
             </div>
@@ -653,7 +711,27 @@ export default function Home() {
                 <button onClick={() => setBulkOpen(v => !v)} className="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-violet-600 hover:text-violet-800">{bulkOpen ? "Hide bulk add" : "＋ Add multiple entries"} <ChevronDown size={13} className={bulkOpen ? "rotate-180" : ""} /></button>
                 {bulkOpen && <div className="mt-3 space-y-2"><textarea value={bulk} onChange={e => setBulk(e.target.value)} placeholder={"Paste names, one per line\nAlex\nJordan\nTaylor"} rows={4} className="w-full resize-y rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm outline-none focus:border-violet-300 focus:bg-white" /><button onClick={addBulk} className="w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-700">Add entries</button></div>}
                 <div className="mt-4 max-h-[260px] space-y-1.5 overflow-y-auto pr-1">
-                  {entries.map(entry => <div key={entry.id} className="group flex items-center gap-3 rounded-xl px-2.5 py-2 transition hover:bg-slate-50">
+                  {entries.map((entry, idx) => <div
+                    key={entry.id}
+                    data-row
+                    onDragOver={e => { if (dragId) { e.preventDefault(); setOverId(entry.id); } }}
+                    onDrop={e => { e.preventDefault(); if (dragId) moveEntry(dragId, entry.id); setDragId(null); setOverId(null); }}
+                    className={`group flex items-center gap-2 rounded-xl px-2 py-2 transition hover:bg-slate-50 ${dragId === entry.id ? "opacity-40" : ""} ${overId === entry.id && dragId && dragId !== entry.id ? "ring-2 ring-violet-300" : ""}`}
+                  >
+                    <span
+                      draggable={!spinning}
+                      onDragStart={e => {
+                        setDragId(entry.id);
+                        e.dataTransfer.effectAllowed = "move";
+                        const row = e.currentTarget.closest("[data-row]") as HTMLElement | null;
+                        if (row) e.dataTransfer.setDragImage(row, 20, 20);
+                      }}
+                      onDragEnd={() => { setDragId(null); setOverId(null); }}
+                      className="shrink-0 cursor-grab touch-none text-slate-300 hover:text-slate-500 active:cursor-grabbing"
+                      title="Drag to reorder"
+                      aria-label={`Drag ${entry.label} to reorder`}
+                    ><GripVertical size={16} /></span>
+
                     {entry.image
                       ? <img src={entry.image} alt="" className="h-6 w-6 shrink-0 rounded-full object-cover" />
                       : <span className="h-3 w-3 shrink-0 rounded-full ring-4 ring-white" style={{ background: entry.color, boxShadow: `0 0 0 1px ${entry.color}33` }} />}
@@ -670,8 +748,14 @@ export default function Home() {
                         const v = e.target.value;
                         setEntries(prev => prev.map(x => x.id === entry.id ? { ...x, stock: v === "" ? undefined : Math.max(0, Math.floor(Number(v))) } : x));
                       }}
-                      className="w-16 shrink-0 rounded-lg border border-slate-200 bg-white px-2 py-1 text-center text-xs font-bold text-slate-700 outline-none focus:border-violet-300"
+                      className="w-14 shrink-0 rounded-lg border border-slate-200 bg-white px-2 py-1 text-center text-xs font-bold text-slate-700 outline-none focus:border-violet-300"
                     />
+
+                    <span className="flex shrink-0 flex-col opacity-100 sm:opacity-0 sm:group-hover:opacity-100">
+                      <button onClick={() => nudgeEntry(entry.id, -1)} disabled={spinning || idx === 0} className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-20" aria-label={`Move ${entry.label} up`}><ArrowUp size={12} /></button>
+                      <button onClick={() => nudgeEntry(entry.id, 1)} disabled={spinning || idx === entries.length - 1} className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-20" aria-label={`Move ${entry.label} down`}><ArrowDown size={12} /></button>
+                    </span>
+
                     <button onClick={() => removeEntry(entry.id)} disabled={spinning} className="rounded-lg p-1.5 text-slate-300 opacity-0 transition hover:bg-rose-50 hover:text-rose-500 group-hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed" aria-label={`Remove ${entry.label}`}><Trash2 size={15} /></button>
                   </div>)}
                   {entries.length === 0 && <div className="rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-400">Add at least two entries to spin.</div>}
